@@ -1,0 +1,5 @@
+
+
+voice_detector_model/
+__pycache__/
+*.pyc
