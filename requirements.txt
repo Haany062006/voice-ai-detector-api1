@@ -8,3 +8,5 @@ python-multipart
 numpy
 scikit-learn
 pydub
+google-cloud-storage
+
