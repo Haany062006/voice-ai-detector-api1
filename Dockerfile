@@ -1,6 +1,5 @@
 FROM python:3.10-slim
 
-# Install system dependencies (VERY IMPORTANT)
 RUN apt-get update && apt-get install -y \
     ffmpeg \
     libsndfile1 \
