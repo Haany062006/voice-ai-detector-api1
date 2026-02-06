@@ -2,21 +2,48 @@ import base64
 import io
 import os
 import torch
-import numpy as np
 import librosa
-from fastapi import FastAPI, HTTPException, Header, Request
+from fastapi import FastAPI, HTTPException, Header
 from pydantic import BaseModel
 from transformers import Wav2Vec2ForSequenceClassification, Wav2Vec2FeatureExtractor
+from google.cloud import storage
 
 # ---------------- CONFIG ----------------
-API_KEY = "YOUR_SECRET_API_KEY"  # Replace this with your key
-MODEL_PATH = "voice_detector_model"
+API_KEY = "YOUR_SECRET_API_KEY"  # change this to your key
+
 SUPPORTED_LANGUAGES = ["Tamil", "English", "Hindi", "Malayalam", "Telugu"]
 
-# ---------------- LOAD MODEL ----------------
+MODEL_DIR = "voice_detector_model"
+
+# ✅ YOUR BUCKET
+GCS_BUCKET_NAME = "voice-ai-models-haany"
+GCS_MODEL_PREFIX = "voice_detector_model/"  # folder name inside bucket
+
+# ---------------- DOWNLOAD MODEL FROM GCS ----------------
+def download_model_from_gcs():
+    client = storage.Client()
+    bucket = client.bucket(GCS_BUCKET_NAME)
+    blobs = bucket.list_blobs(prefix=GCS_MODEL_PREFIX)
+
+    os.makedirs(MODEL_DIR, exist_ok=True)
+
+    for blob in blobs:
+        if blob.name.endswith("/"):
+            continue
+        local_path = os.path.join(MODEL_DIR, blob.name.replace(GCS_MODEL_PREFIX, ""))
+        os.makedirs(os.path.dirname(local_path), exist_ok=True)
+        blob.download_to_filename(local_path)
+
+# ---------------- LOAD MODEL SAFELY ----------------
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-feature_extractor = Wav2Vec2FeatureExtractor.from_pretrained(MODEL_PATH)
-model = Wav2Vec2ForSequenceClassification.from_pretrained(MODEL_PATH)
+
+if not os.path.exists(MODEL_DIR) or not os.listdir(MODEL_DIR):
+    print("Downloading model from GCS...")
+    download_model_from_gcs()
+    print("Model downloaded.")
+
+feature_extractor = Wav2Vec2FeatureExtractor.from_pretrained(MODEL_DIR)
+model = Wav2Vec2ForSequenceClassification.from_pretrained(MODEL_DIR)
 model.to(device)
 model.eval()
 
@@ -31,61 +58,51 @@ class VoiceRequest(BaseModel):
 
 # ---------------- HELPER FUNCTION ----------------
 def predict(audio_bytes):
-    # Convert bytes to numpy array
-    audio, sr = librosa.load(io.BytesIO(audio_bytes), sr=16000)
-    inputs = feature_extractor(audio, sampling_rate=16000, return_tensors="pt", padding=True)
+    audio, _ = librosa.load(io.BytesIO(audio_bytes), sr=16000)
+
+    inputs = feature_extractor(
+        audio,
+        sampling_rate=16000,
+        return_tensors="pt",
+        padding=True
+    )
+
     with torch.no_grad():
         logits = model(inputs.input_values.to(device)).logits
-        probs = torch.softmax(logits, dim=-1).cpu().numpy()[0]
-    
-    # Classification
+        probs = torch.softmax(logits, dim=1).cpu().numpy()[0]
+
     if probs[1] > probs[0]:
-        classification = "AI_GENERATED"
-        explanation = "Unnatural pitch consistency and robotic speech patterns detected"
-        confidence = float(probs[1])
+        return "AI_GENERATED", float(probs[1]), "Unnatural pitch consistency and robotic speech patterns detected"
     else:
-        classification = "HUMAN"
-        explanation = "Natural voice patterns with normal variations detected"
-        confidence = float(probs[0])
-    
-    return classification, confidence, explanation
+        return "HUMAN", float(probs[0]), "Natural voice patterns with normal variations detected"
 
 # ---------------- API ROUTE ----------------
 @app.post("/api/voice-detection")
-async def voice_detection(request: Request, x_api_key: str = Header(None)):
-    # 1. Validate API Key
+def voice_detection(data: VoiceRequest, x_api_key: str = Header(None)):
+
     if x_api_key != API_KEY:
         raise HTTPException(status_code=401, detail="Invalid API key or malformed request")
-    
-    # 2. Parse JSON body
-    data = await request.json()
-    language = data.get("language")
-    audio_format = data.get("audioFormat")
-    audio_base64 = data.get("audioBase64")
 
-    # 3. Validate input
-    if language not in SUPPORTED_LANGUAGES:
-        raise HTTPException(status_code=400, detail=f"Unsupported language: {language}")
-    if audio_format != "mp3":
+    if data.language not in SUPPORTED_LANGUAGES:
+        raise HTTPException(status_code=400, detail=f"Unsupported language: {data.language}")
+
+    if data.audioFormat.lower() != "mp3":
         raise HTTPException(status_code=400, detail="audioFormat must be 'mp3'")
-    if not audio_base64:
+
+    if not data.audioBase64:
         raise HTTPException(status_code=400, detail="audioBase64 is required")
-    
-    # 4. Decode Base64
+
     try:
-        audio_bytes = base64.b64decode(audio_base64)
+        audio_bytes = base64.b64decode(data.audioBase64)
     except Exception:
         raise HTTPException(status_code=400, detail="Invalid Base64 audio")
 
-    # 5. Predict
     classification, confidence, explanation = predict(audio_bytes)
 
-    # 6. Return JSON
     return {
         "status": "success",
-        "language": language,
+        "language": data.language,
         "classification": classification,
         "confidenceScore": round(confidence, 2),
         "explanation": explanation
     }
-
