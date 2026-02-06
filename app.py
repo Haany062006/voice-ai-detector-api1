@@ -16,6 +16,7 @@ SUPPORTED_LANGUAGES = ["Tamil", "English", "Hindi", "Malayalam", "Telugu"]
 MODEL_DIR = "voice_detector_model"
 
 # ✅ YOUR BUCKET
+
 GCS_BUCKET_NAME = "voice-ai-models-haany"
 GCS_MODEL_PREFIX = "voice_detector_model/"  # folder name inside bucket
 
@@ -42,8 +43,9 @@ if not os.path.exists(MODEL_DIR) or not os.listdir(MODEL_DIR):
     download_model_from_gcs()
     print("Model downloaded.")
 
-feature_extractor = Wav2Vec2FeatureExtractor.from_pretrained(MODEL_DIR)
-model = Wav2Vec2ForSequenceClassification.from_pretrained(MODEL_DIR)
+feature_extractor = Wav2Vec2FeatureExtractor.from_pretrained(MODEL_DIR, local_files_only=True)
+model = Wav2Vec2ForSequenceClassification.from_pretrained(MODEL_DIR, local_files_only=True)
+
 model.to(device)
 model.eval()
 
@@ -106,3 +108,4 @@ def voice_detection(data: VoiceRequest, x_api_key: str = Header(None)):
         "confidenceScore": round(confidence, 2),
         "explanation": explanation
     }
+
